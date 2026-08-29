@@ -1,0 +1,714 @@
+openapi: 3.1.1
+
+info:
+  title: TaskFlow API
+  version: 1.0.0
+  description: |
+    API REST para gerenciamento de projetos e tarefas colaborativas do TaskFlow.
+
+    Esta especificação é a fonte da verdade da API e foi definida seguindo
+    Specification-Driven Development (SDD).
+
+    
+servers:
+  - url: http://localhost:5000
+    description: Ambiente local
+
+security: []
+
+tags:
+  - name: Projetos
+    description: Operações relacionadas a projetos.
+  - name: Tarefas
+    description: Operações relacionadas a tarefas.
+
+paths:
+  /projetos:
+    post:
+      tags:
+        - Projetos
+      summary: Criar projeto
+      description: Cria um novo projeto com status inicial `active`.
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+            examples:
+              projeto:
+                summary: Exemplo de criação de projeto
+                value:
+                  name: Plataforma TaskFlow
+                  description: Projeto para gerenciamento colaborativo de tarefas.
+      responses:
+        '201':
+          description: Projeto criado com sucesso.
+          headers:
+            Location:
+              description: URI do projeto criado.
+              schema:
+                type: string
+              example: /projetos/550e8400-e29b-41d4-a716-446655440000
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags:
+        - Projetos
+      summary: Listar projetos
+      description: Lista projetos, opcionalmente filtrando por status.
+      operationId: listProjects
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Status usado para filtrar projetos.
+          schema:
+            $ref: '#/components/schemas/ProjectStatus'
+      responses:
+        '200':
+          description: Lista de projetos retornada com sucesso.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /projetos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      tags:
+        - Projetos
+      summary: Buscar projeto por ID
+      operationId: getProjectById
+      responses:
+        '200':
+          description: Projeto encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/ProjectNotFound'
+
+    patch:
+      tags:
+        - Projetos
+      summary: Atualizar projeto
+      description: |
+        Atualiza parcialmente nome, descrição ou status do projeto.
+
+        Um projeto só pode ser arquivado se não existir nenhuma tarefa
+        com status `in_progress`.
+      operationId: updateProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+            examples:
+              atualizarNome:
+                summary: Atualização do nome
+                value:
+                  name: TaskFlow Corporativo
+              arquivarProjeto:
+                summary: Arquivamento do projeto
+                value:
+                  status: archived
+      responses:
+        '200':
+          description: Projeto atualizado com sucesso.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/ProjectNotFound'
+        '422':
+          description: A atualização viola uma regra de negócio.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                projectHasInProgressTasks:
+                  $ref: '#/components/examples/ProjectHasInProgressTasks'
+
+  /projetos/{id}/tarefas:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      tags:
+        - Tarefas
+      summary: Criar tarefa em um projeto
+      description: |
+        Cria uma nova tarefa com status inicial `pending`.
+
+        Não é permitido criar tarefas em projetos arquivados.
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+            examples:
+              tarefa:
+                summary: Exemplo de criação de tarefa
+                value:
+                  title: Implementar autenticação
+                  description: Criar autenticação da aplicação.
+                  priority: high
+      responses:
+        '201':
+          description: Tarefa criada com sucesso.
+          headers:
+            Location:
+              description: URI da tarefa criada.
+              schema:
+                type: string
+              example: /tarefas/d9428888-122b-11e1-b85c-61cd3cbb3210
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/ProjectNotFound'
+        '422':
+          description: A tarefa não pode ser criada porque o projeto está arquivado.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                archivedProject:
+                  $ref: '#/components/examples/ArchivedProject'
+
+    get:
+      tags:
+        - Tarefas
+      summary: Listar tarefas do projeto
+      description: |
+        Lista as tarefas do projeto.
+
+        Os filtros `status` e `priority` são opcionais e podem ser combinados.
+      operationId: listProjectTasks
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Status usado para filtrar tarefas.
+          schema:
+            $ref: '#/components/schemas/TaskStatus'
+        - name: priority
+          in: query
+          required: false
+          description: Prioridade usada para filtrar tarefas.
+          schema:
+            $ref: '#/components/schemas/TaskPriority'
+      responses:
+        '200':
+          description: Lista de tarefas retornada com sucesso.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TaskResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/ProjectNotFound'
+
+  /tarefas/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+
+    patch:
+      tags:
+        - Tarefas
+      summary: Atualizar tarefa
+      description: |
+        Atualiza parcialmente título, descrição, status ou prioridade da tarefa.
+
+        O status deve seguir estritamente o fluxo:
+        `pending -> in_progress -> done`.
+
+        Não são permitidas as transições:
+        - `pending -> done`
+        - `in_progress -> pending`
+        - `done -> pending`
+        - `done -> in_progress`
+
+        Quando o status é alterado para `done`, o campo `completedAt`
+        é preenchido automaticamente pelo servidor.
+      operationId: updateTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTaskRequest'
+            examples:
+              iniciarTarefa:
+                summary: Iniciar tarefa
+                value:
+                  status: in_progress
+              concluirTarefa:
+                summary: Concluir tarefa
+                value:
+                  status: done
+              atualizarPrioridade:
+                summary: Atualizar prioridade
+                value:
+                  priority: high
+      responses:
+        '200':
+          description: Tarefa atualizada com sucesso.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/TaskNotFound'
+        '422':
+          description: A atualização viola uma regra de negócio.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                invalidStatusTransition:
+                  $ref: '#/components/examples/InvalidTaskStatusTransition'
+
+    delete:
+      tags:
+        - Tarefas
+      summary: Excluir tarefa
+      description: |
+        Exclui uma tarefa.
+
+        Somente tarefas com status `pending` podem ser excluídas.
+        Tarefas `in_progress` ou `done` retornam `422`.
+      operationId: deleteTask
+      responses:
+        '204':
+          description: Tarefa excluída com sucesso.
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/TaskNotFound'
+        '422':
+          description: A tarefa não pode ser excluída devido ao status atual.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                taskCannotBeDeleted:
+                  $ref: '#/components/examples/TaskCannotBeDeleted'
+
+components:
+  parameters:
+    ProjectId:
+      name: id
+      in: path
+      required: true
+      description: Identificador único do projeto.
+      schema:
+        type: string
+        format: uuid
+      example: 550e8400-e29b-41d4-a716-446655440000
+
+    TaskId:
+      name: id
+      in: path
+      required: true
+      description: Identificador único da tarefa.
+      schema:
+        type: string
+        format: uuid
+      example: d9428888-122b-11e1-b85c-61cd3cbb3210
+
+  schemas:
+    ProjectStatus:
+      type: string
+      enum:
+        - active
+        - archived
+      default: active
+      examples:
+        - active
+
+    TaskStatus:
+      type: string
+      enum:
+        - pending
+        - in_progress
+        - done
+      default: pending
+      examples:
+        - pending
+
+    TaskPriority:
+      type: string
+      enum:
+        - low
+        - medium
+        - high
+      examples:
+        - high
+
+    CreateProjectRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Nome do projeto.
+          examples:
+            - Plataforma TaskFlow
+        description:
+          type:
+            - string
+            - 'null'
+          description: Descrição opcional do projeto.
+          examples:
+            - Projeto para gerenciamento colaborativo de tarefas.
+
+    UpdateProjectRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Novo nome do projeto.
+        description:
+          type:
+            - string
+            - 'null'
+          description: Nova descrição do projeto.
+        status:
+          $ref: '#/components/schemas/ProjectStatus'
+
+    ProjectResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - status
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+          examples:
+            - 550e8400-e29b-41d4-a716-446655440000
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          examples:
+            - Plataforma TaskFlow
+        description:
+          type:
+            - string
+            - 'null'
+          examples:
+            - Projeto para gerenciamento colaborativo de tarefas.
+        status:
+          $ref: '#/components/schemas/ProjectStatus'
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: Data de criação em UTC.
+          examples:
+            - '2026-08-29T18:00:00Z'
+
+    CreateTaskRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - title
+        - priority
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Título da tarefa.
+          examples:
+            - Implementar autenticação
+        description:
+          type:
+            - string
+            - 'null'
+          description: Descrição opcional da tarefa.
+          examples:
+            - Implementar autenticação utilizando JWT.
+        priority:
+          $ref: '#/components/schemas/TaskPriority'
+
+    UpdateTaskRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Novo título da tarefa.
+        description:
+          type:
+            - string
+            - 'null'
+          description: Nova descrição da tarefa.
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        priority:
+          $ref: '#/components/schemas/TaskPriority'
+
+    TaskResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - status
+        - priority
+        - createdAt
+        - projectId
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+          examples:
+            - d9428888-122b-11e1-b85c-61cd3cbb3210
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          examples:
+            - Implementar autenticação
+        description:
+          type:
+            - string
+            - 'null'
+          examples:
+            - Implementar autenticação utilizando JWT.
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        priority:
+          $ref: '#/components/schemas/TaskPriority'
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: Data de criação em UTC.
+          examples:
+            - '2026-08-29T18:00:00Z'
+        completedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          readOnly: true
+          description: |
+            Data de conclusão em UTC.
+            Preenchida automaticamente quando a tarefa passa para `done`.
+          examples:
+            - '2026-08-29T20:30:00Z'
+        projectId:
+          type: string
+          format: uuid
+          readOnly: true
+          examples:
+            - 550e8400-e29b-41d4-a716-446655440000
+
+    ProblemDetails:
+      type: object
+      description: Estrutura de erro compatível com ProblemDetails.
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          examples:
+            - https://taskflow/errors/project-not-found
+        title:
+          type: string
+          examples:
+            - Resource not found
+        status:
+          type: integer
+          format: int32
+          minimum: 400
+          maximum: 599
+          examples:
+            - 404
+        detail:
+          type: string
+          examples:
+            - O projeto informado não foi encontrado.
+        instance:
+          type: string
+          examples:
+            - /projetos/550e8400-e29b-41d4-a716-446655440000
+        code:
+          type: string
+          description: Código estável e legível por máquina.
+          examples:
+            - PROJECT_NOT_FOUND
+      additionalProperties: true
+
+    ValidationProblemDetails:
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          required:
+            - errors
+          properties:
+            errors:
+              type: object
+              description: Erros de validação agrupados pelo campo.
+              additionalProperties:
+                type: array
+                items:
+                  type: string
+              examples:
+                - name:
+                    - O campo name é obrigatório.
+
+  responses:
+    ValidationError:
+      description: Requisição inválida.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ValidationProblemDetails'
+          examples:
+            requiredField:
+              summary: Campo obrigatório não informado
+              value:
+                type: https://tools.ietf.org/html/rfc9110#section-15.5.1
+                title: One or more validation errors occurred.
+                status: 400
+                detail: Um ou mais campos são inválidos.
+                instance: /projetos
+                code: VALIDATION_ERROR
+                errors:
+                  name:
+                    - O campo name é obrigatório.
+
+    ProjectNotFound:
+      description: Projeto não encontrado.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          examples:
+            projectNotFound:
+              $ref: '#/components/examples/ProjectNotFound'
+
+    TaskNotFound:
+      description: Tarefa não encontrada.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          examples:
+            taskNotFound:
+              $ref: '#/components/examples/TaskNotFound'
+
+  examples:
+    ProjectNotFound:
+      summary: Projeto não encontrado
+      value:
+        type: https://taskflow/errors/project-not-found
+        title: Project not found
+        status: 404
+        detail: O projeto informado não foi encontrado.
+        instance: /projetos/550e8400-e29b-41d4-a716-446655440000
+        code: PROJECT_NOT_FOUND
+
+    TaskNotFound:
+      summary: Tarefa não encontrada
+      value:
+        type: https://taskflow/errors/task-not-found
+        title: Task not found
+        status: 404
+        detail: A tarefa informada não foi encontrada.
+        instance: /tarefas/d9428888-122b-11e1-b85c-61cd3cbb3210
+        code: TASK_NOT_FOUND
+
+    ProjectHasInProgressTasks:
+      summary: Projeto possui tarefas em andamento
+      value:
+        type: https://taskflow/errors/project-has-in-progress-tasks
+        title: Business rule violation
+        status: 422
+        detail: O projeto não pode ser arquivado enquanto possuir tarefas em andamento.
+        instance: /projetos/550e8400-e29b-41d4-a716-446655440000
+        code: PROJECT_HAS_IN_PROGRESS_TASKS
+
+    ArchivedProject:
+      summary: Projeto arquivado
+      value:
+        type: https://taskflow/errors/project-archived
+        title: Business rule violation
+        status: 422
+        detail: Não é permitido criar novas tarefas em um projeto arquivado.
+        instance: /projetos/550e8400-e29b-41d4-a716-446655440000/tarefas
+        code: PROJECT_ARCHIVED
+
+    TaskCannotBeDeleted:
+      summary: Tarefa não pode ser excluída
+      value:
+        type: https://taskflow/errors/task-cannot-be-deleted
+        title: Business rule violation
+        status: 422
+        detail: Somente tarefas com status pending podem ser excluídas.
+        instance: /tarefas/d9428888-122b-11e1-b85c-61cd3cbb3210
+        code: TASK_CANNOT_BE_DELETED
+
+    InvalidTaskStatusTransition:
+      summary: Transição inválida de status
+      value:
+        type: https://taskflow/errors/invalid-task-status-transition
+        title: Business rule violation
+        status: 422
+        detail: A transição de status solicitada não é permitida.
+        instance: /tarefas/d9428888-122b-11e1-b85c-61cd3cbb3210
+        code: INVALID_TASK_STATUS_TRANSITION

@@ -1,188 +1,352 @@
-# Decisões técnicas — TaskFlow
+# Decisões Técnicas — TaskFlow
 
 ## Objetivo
 
-Este documento registra as decisões técnicas adotadas para a API TaskFlow e os trade-offs aceitos. O objetivo é manter a implementação previsível, testável e aderente ao contrato, sem adicionar abstrações que não resolvam um problema atual do escopo.
+Este documento registra decisões de implementação e arquitetura
+adotadas para atender ao contrato definido em `openapi.yaml`.
 
-## 1. Contrato e processo de desenvolvimento
+O OpenAPI é a fonte da verdade para comportamento HTTP e regras
+contratuais. Este documento explica decisões técnicas e trade-offs,
+não substitui nem redefine a especificação.
 
-### OpenAPI como fonte da verdade
+---
 
-O arquivo [`openapi.yaml`](../openapi.yaml) é a fonte da verdade do contrato HTTP. Rotas, métodos, parâmetros, formatos de entrada e saída, códigos de status, enums e exemplos de erro devem permanecer compatíveis com essa especificação.
+# 1. Specification-Driven Development
 
-Uma divergência entre implementação e OpenAPI é considerada um defeito. Mudanças de comportamento devem começar pela revisão e aprovação do contrato; somente depois devem ser refletidas no código e nos testes. A documentação gerada em runtime é uma representação do contrato, não uma segunda fonte independente.
+## OpenAPI como fonte da verdade
 
-### Specification-Driven Development
+O desenvolvimento segue:
 
-O projeto segue Specification-Driven Development (SDD):
+OpenAPI
+→ revisão
+→ implementação
+→ testes de contrato
 
-1. definir e revisar o comportamento no OpenAPI;
-2. transformar os cenários do contrato em testes de integração;
-3. implementar o menor conjunto de código necessário para satisfazer o contrato;
-4. validar continuamente implementação e especificação contra os mesmos cenários.
+Mudanças comportamentais devem começar pelo contrato.
 
-Essa abordagem antecipa ambiguidades de integração e reduz decisões implícitas nos controllers. Como custo, alterações aparentemente pequenas exigem disciplina para manter contrato, testes e implementação sincronizados.
+Uma divergência entre código, testes e OpenAPI é considerada defeito,
+salvo quando uma alteração contratual estiver sendo deliberadamente
+discutida.
 
-## 2. Plataforma e arquitetura
+## Versão
 
-### ASP.NET Core sobre .NET 8
+O contrato usa `openapi: 3.0.3`, conforme o item 1.1 do desafio.
+Campos anuláveis são representados com `nullable: true`. A validação por
+JSON Schema nos testes traduz `nullable` para uma união de tipos com
+`null`, já que a palavra-chave não existe em JSON Schema 2020-12.
 
-A API será implementada em ASP.NET Core Web API sobre .NET 8, versão LTS compatível com o requisito do desafio. Serão utilizados os recursos nativos da plataforma para injeção de dependência, model binding, validação da camada HTTP, serialização JSON, `ProblemDetails`, logging e `TimeProvider`.
+A aplicação expõe uma Swagger UI em `/swagger` apenas para navegação. Ela
+renderiza o próprio `openapi.yaml`, servido em `/openapi.yaml`. Não há
+geração de contrato a partir do código, evitando uma segunda fonte que
+possa divergir.
 
-### Organização em camadas
+---
 
-A solução será organizada em **Controllers + Application/UseCases + Domain + Infrastructure**:
+# 2. Arquitetura
 
-- **Controllers:** traduzem HTTP para chamadas de aplicação e transformam resultados em respostas HTTP. Não concentram regras de negócio nem acesso a dados.
-- **Application/UseCases:** orquestram cada operação exposta pela API, consultam/persistem dados e coordenam as regras do domínio. Um caso de uso explícito por operação favorece leitura e testes sem exigir um mediator.
-- **Domain:** contém entidades, enums e invariantes que independem de HTTP e de EF Core, especialmente as transições de estado de tarefas.
-- **Infrastructure:** contém `DbContext`, mapeamentos do EF Core, migrations e detalhes do SQLite.
+A solução utiliza uma arquitetura em camadas simples:
 
-As dependências apontam para o núcleo da aplicação. A separação existe para tornar responsabilidades visíveis, não para impor uma Clean Architecture completa. Tipos e interfaces só serão extraídos quando houver uma fronteira real a proteger ou um benefício concreto de teste.
+HTTP
+ ↓
+Controllers
+ ↓
+Application / UseCases
+ ↓
+Domain
+ ↓
+Infrastructure / EF Core
+ ↓
+SQLite
 
-## 3. Persistência
+### Controllers
 
-### Entity Framework Core
+Responsáveis exclusivamente pela camada HTTP:
 
-O EF Core será o mecanismo de persistência. O `DbContext` representa a unidade de trabalho da requisição e seus `DbSet`s fornecem as operações de coleção necessárias. Consultas específicas permanecem próximas aos casos de uso ou são extraídas apenas quando ganharem complexidade ou reutilização real.
+- routing;
+- binding;
+- validação de entrada;
+- tradução do resultado para respostas HTTP.
 
-As migrations versionam o schema. Restrições que também possam ser expressas no banco, como chaves estrangeiras e nulabilidade, complementam — mas não substituem — as validações e invariantes da aplicação.
+Não contêm regras de negócio.
 
-### SQLite
+### Application / UseCases
 
-SQLite foi escolhido porque faz parte da stack definida, é relacional, não requer um serviço externo e torna a aplicação simples de executar e avaliar localmente. Também permite que os testes de integração exercitem SQL, constraints, relacionamentos e transações com comportamento muito mais próximo do ambiente real do desafio.
+Um caso de uso representa uma operação relevante da API.
 
-A escolha não pressupõe que SQLite seja o banco ideal para produção em qualquer escala. Ele privilegia portabilidade e baixo custo operacional neste contexto.
+Responsabilidades:
 
-### Por que não usar EF Core InMemory
+- orquestração;
+- consulta/persistência;
+- verificação de existência;
+- coordenação das regras de domínio.
 
-O provider `Microsoft.EntityFrameworkCore.InMemory` não é um banco relacional e não reproduz fielmente o comportamento do SQLite. Entre as diferenças relevantes estão ausência de SQL real, constraints relacionais, semântica de transações e diferenças na tradução/execução de consultas LINQ. Testes podem passar no InMemory e falhar com o provider real.
+### Domain
 
-Por isso, testes de integração usarão SQLite, preferencialmente com um banco isolado por teste ou suíte. Quando for útil executar em memória, será usado **SQLite in-memory com conexão mantida aberta**, e não o provider EF InMemory. Testes unitários do domínio não precisam de provider de persistência.
+Contém:
 
-## 4. Erros HTTP
+- entidades;
+- enums;
+- invariantes;
+- transições de estado.
 
-### ProblemDetails
+Não depende de HTTP ou EF Core.
 
-Erros serão retornados com `Content-Type: application/problem+json`, seguindo `ProblemDetails` e, para erros de campos, `ValidationProblemDetails`. Além dos campos padronizados (`type`, `title`, `status`, `detail` e `instance`), a resposta inclui `code`, um identificador estável e legível por máquina conforme definido no OpenAPI.
+### Infrastructure
 
-Detalhes internos, stack traces, SQL e nomes de infraestrutura não serão expostos. O tratamento será centralizado pelos mecanismos do ASP.NET Core para manter o mesmo formato entre falhas de binding, validação, recurso inexistente e regra de negócio.
+Contém:
 
-### Semântica de 400, 404 e 422
+- DbContext;
+- configurações EF Core;
+- SQLite;
+- migrations.
 
-| Status | Quando usar | Exemplos |
-| --- | --- | --- |
-| `400 Bad Request` | A requisição não pode ser interpretada ou viola o contrato de entrada. | JSON inválido, UUID malformado, enum desconhecido, campo obrigatório ausente, tipo incorreto, string fora do tamanho permitido, body vazio, PATCH sem propriedades ou propriedade não prevista. |
-| `404 Not Found` | A requisição é válida, mas o recurso identificado não existe. | Projeto ou tarefa não encontrados; listagem/criação de tarefa para um `projectId` inexistente. |
-| `422 Unprocessable Content` | A requisição é sintaticamente e estruturalmente válida e o recurso existe, porém a operação viola uma regra de negócio no estado atual. | Criar tarefa em projeto arquivado, arquivar projeto com tarefa em andamento, transição inválida de tarefa ou exclusão de tarefa não pendente. |
+### Decisão
 
-A ordem de avaliação deve evitar respostas enganosas: primeiro valida-se o contrato; depois, a existência do recurso; por fim, as regras dependentes do estado persistido. Um identificador malformado resulta em `400`; um UUID válido que não identifica recurso resulta em `404`.
+Não foi adotada uma Clean Architecture completa.
 
-## 5. Atualizações parciais e `null`
+A separação existe apenas onde há responsabilidade concreta,
+mantendo a solução proporcional ao tamanho do desafio.
 
-### Estratégia para PATCH
+---
 
-Os endpoints `PATCH` implementam **partial update com `application/json`**, conforme o schema específico do OpenAPI. Não será adotado JSON Patch (`application/json-patch+json`), pois operações como `op`, `path` e `value` não fazem parte do contrato aprovado.
+# 3. Persistência
 
-Para cada propriedade, a aplicação precisa distinguir explicitamente:
+## EF Core + SQLite
 
-- propriedade ausente: preservar o valor atual;
-- propriedade presente com valor: validar e substituir;
-- propriedade presente com `null`: limpar apenas quando o contrato permitir `null`.
+SQLite foi escolhido por:
 
-Essa distinção será preservada no DTO de entrada por representação explícita de presença (por exemplo, um tipo `Optional<T>` com conversão JSON), porque propriedades C# apenas anuláveis não diferenciam com segurança “ausente” de “enviado como `null`”. O body deve conter ao menos uma propriedade reconhecida, e propriedades adicionais são rejeitadas, em conformidade com `minProperties: 1` e `additionalProperties: false`.
+- atender ao requisito;
+- não exigir infraestrutura externa;
+- permitir migrations;
+- possuir comportamento relacional real;
+- facilitar execução local e testes.
 
-O PATCH retorna `200 OK` com o recurso atualizado. Reenviar o valor já vigente é aceito como operação idempotente e não constitui transição de estado.
+O `DbContext` funciona como unidade de trabalho da requisição.
 
-### Comportamento de campos `null`
+Não será criado Repository ou Unit of Work adicional sem necessidade.
 
-- `description` de projeto e tarefa é anulável. Quando omitida, não muda; quando enviada como `null`, é apagada.
-- `name`, `title`, `status` e `priority` não são anuláveis. Se presentes com `null`, produzem `400`.
-- Campos controlados pelo servidor (`id`, `projectId`, `createdAt` e `completedAt`) não pertencem aos schemas de atualização. Se enviados, são propriedades adicionais e produzem `400`; não são silenciosamente ignorados.
-- Na criação, uma `description` ausente ou explicitamente `null` resulta em descrição nula. Os demais campos obrigatórios seguem o schema de criação.
+## Testes
 
-## 6. Estados e regras de negócio
+Testes de integração utilizam SQLite.
 
-### Status de projetos
+O provider EF Core InMemory foi descartado porque não reproduz
+adequadamente comportamento relacional, constraints, SQL e transações.
 
-Projetos possuem os estados `active` e `archived` e são criados como `active`.
+Quando executado em memória será utilizado SQLite in-memory mantendo
+a conexão aberta durante o teste.
 
-- Um projeto `active` pode receber novas tarefas.
-- Um projeto só pode mudar para `archived` quando não possuir tarefa `in_progress`; caso contrário, a resposta é `422` com o código previsto no contrato.
-- Um projeto `archived` não aceita novas tarefas; a tentativa retorna `422`.
-- Como o contrato permite atualizar o status para ambos os valores e não define `archived` como terminal, a reativação `archived -> active` é permitida.
-- Enviar o status atual é um no-op válido.
+---
 
-Arquivar um projeto não altera nem exclui suas tarefas. As operações sobre tarefas existentes continuam obedecendo às regras próprias dessas tarefas.
+# 4. Estratégia de erros
 
-### Máquina de estados das tarefas
+A API utiliza `ProblemDetails` e `ValidationProblemDetails`.
 
-Tarefas são criadas como `pending` e seguem o fluxo estrito:
+A classificação segue o contrato:
 
-```text
-pending ──> in_progress ──> done
-```
+400 → entrada inválida
+404 → recurso inexistente
+422 → regra de negócio
 
-Decisões decorrentes:
+A avaliação ocorre preferencialmente na seguinte ordem:
 
-- `pending -> done` é deliberadamente proibida;
-- `in_progress -> pending` é proibida;
-- `done -> pending` e `done -> in_progress` são proibidas;
-- `done` é estado terminal;
-- repetir o status atual é um no-op, não uma nova transição;
-- somente tarefas `pending` podem ser excluídas.
+Request Contract
+      ↓
+Resource Existence
+      ↓
+Business Rules
 
-Uma transição proibida é uma violação de regra de negócio e retorna `422`, não `400`, porque o valor do enum é válido, mas não é aplicável ao estado atual. A proibição de `pending -> done` força a passagem explícita por `in_progress`, preservando o significado do fluxo aprovado mesmo que implique duas requisições para concluir imediatamente uma tarefa.
+Isso evita, por exemplo, consultar recursos quando a própria
+requisição já viola o contrato.
 
-### `completedAt` controlado pelo servidor
+Os erros possuem `code` estável conforme definido no OpenAPI.
 
-`completedAt` é somente leitura e nunca é aceito em requests. O servidor o define no instante da transição válida `in_progress -> done`. Enquanto a tarefa não estiver em `done`, o campo permanece `null`.
+Detalhes internos de implementação não são expostos.
 
-Como `done` é terminal, não há regra de limpeza ou recálculo de `completedAt`. Repetir `status: done` preserva o timestamp original. Essa decisão evita que clientes forjem ou alterem o histórico de conclusão.
+---
 
-## 7. Tempo e serialização
+# 5. PATCH
 
-### Timestamps em UTC e `TimeProvider`
+PATCH utiliza partial update com `application/json`.
 
-`createdAt` e `completedAt` são produzidos pelo servidor em UTC e serializados em ISO 8601/RFC 3339 com offset UTC (`Z`), conforme `format: date-time` do OpenAPI. A implementação deve preferir `DateTimeOffset` para preservar de forma explícita o offset e não deve depender de `DateTime.Now` nem do fuso horário da máquina.
+JSON Patch RFC 6902 não será utilizado porque não faz parte
+do contrato.
 
-O relógio será acessado por `TimeProvider`, injetado nos casos de uso ou serviços que criam timestamps. Em produção usa-se `TimeProvider.System`; em testes, um provider controlável permite afirmar valores exatos sem sleeps ou tolerâncias frágeis.
+A implementação precisa distinguir:
 
-### Serialização de enums
+campo ausente
+→ manter valor
 
-Enums são expostos como strings, nunca como números. Em particular, o valor interno `InProgress` deve ser serializado e desserializado exatamente como `in_progress`. A política de enum será `snake_case` em minúsculas, resultando também em `pending`, `done`, `active`, `archived`, `low`, `medium` e `high`.
+campo presente
+→ atualizar
 
-A política se aplica aos valores de enum; os nomes das propriedades JSON permanecem em `camelCase`, como `createdAt`, `completedAt` e `projectId`. Valores fora do conjunto definido resultam em `400`.
+campo presente como null
+→ aplicar somente quando permitido pelo schema
 
-## 8. Segurança e escopo
+Será utilizada representação explícita de presença no DTO
+(por exemplo `Optional<T>`).
 
-Autenticação e autorização não serão implementadas porque estão explicitamente fora do escopo. Isso está refletido por `security: []` no OpenAPI. Não serão adicionados JWT, usuários, papéis, ownership ou filtros por identidade apenas para simular segurança.
+Essa decisão evita a ambiguidade existente em propriedades
+C# simplesmente anuláveis.
 
-Essa decisão significa que qualquer cliente com acesso à API pode executar todas as operações. Em um cenário de produção, autenticação, autorização por projeto, gestão de segredos, HTTPS e políticas de abuso seriam requisitos prévios à exposição pública.
+Campos controlados pelo servidor não fazem parte dos schemas
+de atualização.
 
-## 9. Abstrações deliberadamente não adotadas
+---
 
-Para o tamanho e os requisitos atuais, foram descartados:
+# 6. Regras de domínio
 
-- **MediatR/CQRS framework:** os casos de uso já fornecem limites explícitos. Um mediator acrescentaria handlers, indireção e dependência sem necessidade atual de pipeline ou dispatch desacoplado.
-- **Repository genérico:** `DbContext`/`DbSet` já oferecem unidade de trabalho e operações de persistência. Uma interface CRUD genérica ocultaria recursos úteis do EF Core, empobreceria consultas e tenderia a vazar `IQueryable` ou a crescer com métodos específicos.
-- **AutoMapper:** os DTOs são pequenos e o mapeamento explícito torna campos controlados pelo servidor e mudanças contratuais visíveis no code review.
-- **Mensageria, eventos distribuídos e consistência eventual:** as operações são locais, síncronas e cabem em uma transação do banco. Não há consumidor assíncrono ou integração externa no escopo.
-- **Event sourcing, DDD tático completo, sagas, buses internos e múltiplos bancos:** não há requisitos que justifiquem o custo operacional e cognitivo.
-- **Service/repository por entidade apenas por convenção:** classes serão criadas por caso de uso ou responsabilidade real, evitando camadas que somente repassam chamadas.
+As regras de estado são aquelas definidas em `openapi.yaml`.
 
-Essas não são rejeições permanentes às tecnologias. São decisões proporcionais ao problema atual. Uma abstração poderá ser introduzida quando houver pelo menos um caso concreto que compense sua complexidade e puder ser sustentada por testes.
+A implementação as representa como invariantes do domínio,
+principalmente:
 
-## 10. Limitações e trade-offs conhecidos
+- transições de estado;
+- conclusão de tarefas;
+- arquivamento de projetos;
+- exclusão de tarefas.
 
-- **Concorrência do SQLite:** é adequado para execução local e baixo volume, mas possui limitações de escrita concorrente e escalabilidade horizontal. Uma carga de produção maior pode exigir outro banco relacional e nova validação de comportamento.
-- **Fidelidade de testes:** SQLite oferece maior fidelidade que EF InMemory, porém não garante portabilidade automática para SQL Server ou PostgreSQL; diferenças de tipos, índices, locking e SQL continuam existindo.
-- **Sem controle de concorrência otimista:** o contrato não define ETag, `If-Match`, row version ou resposta `409`. Atualizações concorrentes seguem last-write-wins. Isso é simples, mas pode perder alterações em cenários multiusuário reais.
-- **Listagens sem paginação:** o contrato retorna arrays completos. É suficiente para o desafio, mas consumo de memória e latência crescem com o volume; paginação exigiria mudança explícita no OpenAPI.
-- **Exclusão física de tarefas:** não há soft delete, lixeira ou auditoria de exclusão. A simplicidade reduz armazenamento e código, mas impede recuperação e histórico.
-- **Auditoria limitada:** existem timestamps de criação e conclusão, mas não `updatedAt`, ator da mudança ou histórico de transições.
-- **Sem reabertura de tarefas concluídas:** a máquina de estados é intencionalmente restrita. Uma necessidade futura de correção/reabertura exigirá uma nova transição contratual e a definição do efeito sobre `completedAt`.
-- **Reativação de projetos:** é permitida por não haver proibição no contrato. Se `archived` precisar se tornar terminal, isso deve ser definido primeiro no OpenAPI e coberto por um novo erro de negócio.
-- **Sem autenticação:** aceitável apenas no ambiente controlado do desafio; não é uma postura de segurança adequada para exposição pública.
+Uma operação estruturalmente válida que viole o estado atual
+do domínio produz o erro `422` definido no contrato.
 
-Esses limites são conscientes e mantêm a solução compatível com o escopo. Evoluções devem ser motivadas por requisitos observáveis, começar pelo OpenAPI e preservar a distinção entre validação de entrada, inexistência de recurso e violação de regra de negócio.
+Reenvio do estado atual é tratado como operação idempotente
+quando permitido pelo contrato.
+
+## Transição de status da tarefa (leitura estrita)
+
+O enunciado define o fluxo `pending -> in_progress -> done` e proíbe
+retroceder. A implementação trata cada etapa do fluxo como obrigatória:
+o atalho `pending -> done` também é recusado, com `422
+INVALID_TASK_STATUS_TRANSITION`.
+
+É uma interpretação deliberada e mais estrita do que a leitura literal
+(que proíbe apenas o retrocesso). Está refletida no `openapi.yaml` e nos
+testes de contrato. Liberar `pending -> done` exigiria alterar primeiro o
+contrato.
+
+---
+
+# 7. Datas e relógio
+
+Timestamps gerados pelo servidor utilizam UTC.
+
+Será utilizado:
+
+`TimeProvider`
+
+em vez de chamadas diretas a:
+
+`DateTime.Now`
+`DateTime.UtcNow`
+
+Isso permite controlar o relógio durante testes.
+
+`DateTimeOffset` será preferido para timestamps expostos pela API.
+
+No fio, um conversor normaliza os timestamps para UTC no formato RFC 3339 com
+milissegundos e sufixo `Z` (ex.: `2026-08-30T21:04:28.445Z`), alinhado a
+`format: date-time` e aos exemplos do `openapi.yaml`. O domínio permanece em
+`DateTimeOffset`; só a representação de saída é fixada.
+
+---
+
+# 8. Serialização
+
+A API utiliza `System.Text.Json`.
+
+Propriedades seguem:
+
+camelCase
+
+Enums são serializados como strings de acordo com os valores
+definidos no OpenAPI.
+
+A configuração garante especificamente a representação contratual
+de valores como `in_progress`.
+
+---
+
+# 9. Abstrações não adotadas
+
+Não serão utilizados inicialmente:
+
+- MediatR;
+- Repository genérico;
+- Unit of Work customizado;
+- AutoMapper;
+- mensageria;
+- event sourcing;
+- sagas;
+- microservices.
+
+### Motivo
+
+Essas abstrações não resolvem problemas presentes no escopo atual.
+
+O objetivo é evitar complexidade acidental e manter rastreabilidade
+entre:
+
+OpenAPI
+→ UseCase
+→ implementação
+→ teste
+
+Novas abstrações só serão introduzidas quando houver requisito
+concreto que justifique seu custo.
+
+---
+
+# 10. Segurança
+
+Autenticação e autorização estão fora do escopo atual e não serão
+implementadas.
+
+O contrato representa isso explicitamente.
+
+Em ambiente produtivo, autenticação, autorização, HTTPS,
+gestão de segredos e políticas de acesso seriam requisitos
+necessários antes da exposição pública.
+
+---
+
+# 11. Limitações conhecidas
+
+## SQLite
+
+Adequado para o desafio e execução local, mas não representa uma
+decisão de banco para sistemas de alta escala.
+
+## Concorrência
+
+Não existem ETags, row versions ou controle explícito de concorrência.
+Atualizações concorrentes seguem last-write-wins.
+
+## Paginação
+
+Listagens não possuem paginação porque o contrato atual não a define.
+
+## Auditoria
+
+Não existe histórico completo de alterações.
+
+## Exclusão
+
+A exclusão de tarefas é física; não existe soft delete.
+
+Essas limitações são aceitas conscientemente para manter a solução
+proporcional ao escopo.
+
+---
+
+# 12. Critério para evolução
+
+Uma decisão arquitetural nova deve responder pelo menos uma destas
+perguntas:
+
+1. Qual requisito atual ela resolve?
+2. Qual problema observável ela elimina?
+3. Qual parte do contrato exige essa complexidade?
+
+Se nenhuma delas possuir resposta concreta, a abstração não deve
+ser introduzida.
+
+Mudanças comportamentais começam pelo `openapi.yaml`.

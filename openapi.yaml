@@ -9,7 +9,16 @@ info:
     Esta especificação é a fonte da verdade da API e foi definida seguindo
     Specification-Driven Development (SDD).
 
-    
+    Regras principais:
+    - Um projeto só pode ser arquivado se não possuir tarefas com status `in_progress`.
+    - Não é permitido criar tarefas em projetos arquivados.
+    - Uma tarefa só pode ser excluída quando estiver com status `pending`.
+    - O fluxo de status da tarefa é `pending -> in_progress -> done`.
+    - Não é permitido retroceder o status.
+    - A transição direta `pending -> done` não é permitida.
+    - Ao concluir uma tarefa, `completedAt` é preenchido automaticamente pelo servidor.
+    - `completedAt` é somente leitura e não pode ser informado pelo cliente.
+
 servers:
   - url: http://localhost:5000
     description: Ambiente local
